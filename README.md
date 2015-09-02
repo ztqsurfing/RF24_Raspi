@@ -3,9 +3,9 @@ Using RF24 antenna on Raspi to facilitate heterogeneous wireless network
 
 * dsdv.cpp
 
-> contain a main func, running simple dsdv protocol to setup route table
-> nxt node is changed when DV broadcast message is loss for a time threshold
-> route table is saved to file "route.dat"
+>1. contain a main func, running simple dsdv protocol to setup route table
+>2. nxt node is changed when DV broadcast message is loss for a time threshold
+>3. route table is saved to file "route.dat"
 
 ## gps-based.cpp
 - contain a main func, running our gps-based routing protocol to setup route table

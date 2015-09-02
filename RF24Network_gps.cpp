@@ -6,6 +6,7 @@
  version 2 as published by the Free Software Foundation.
  */
 #include "RF24Network_config.h"
+#include <log.h>
 
  #if defined (RF24_LINUX)
   #include <stdlib.h>
@@ -20,10 +21,10 @@
   #include <iostream>
   #include <algorithm>
   #include <RF24/RF24.h>
-  #include "RF24Network.h"
+  #include "RF24Network_gps.h"
 #else  
   #include "RF24.h"
-  #include "RF24Network.h"
+  #include "RF24Network_gps.h"
 #endif
 
 #if defined (ENABLE_SLEEP_MODE) && !defined (RF24_LINUX) && !defined (__ARDUINO_X86__)
@@ -266,14 +267,13 @@ uint8_t RF24Network::update(void)
 #if defined (RF24_LINUX)
 /******************************************************************/
 
+//替换RF24Network中的enqueue，当发现是GPS_TYPE后，加入到gps_queue中
 uint8_t RF24Network::enqueue(RF24NetworkHeader* header) {
   uint8_t result = false;
   
   RF24NetworkFrame frame = RF24NetworkFrame(*header,frame_buffer+sizeof(RF24NetworkHeader),frame_size-sizeof(RF24NetworkHeader)); 
   
   bool isFragment = ( frame.header.type == NETWORK_FIRST_FRAGMENT || frame.header.type == NETWORK_MORE_FRAGMENTS || frame.header.type == NETWORK_LAST_FRAGMENT || frame.header.type == NETWORK_MORE_FRAGMENTS_NACK);
-  
-  
   
   // This is sent to itself
   if (frame.header.from_node == node_address) {    
@@ -300,12 +300,14 @@ uint8_t RF24Network::enqueue(RF24NetworkHeader* header) {
 
 	  RF24NetworkFrame *f = &(frameFragmentsCache[ frame.header.from_node ] );
 	  
-	  
 	  result=f->header.type == EXTERNAL_DATA_TYPE ? 2 : 1;
 	  
 	  //Load external payloads into a separate queue on linux
 	  if(result == 2){
 	    external_queue.push( frameFragmentsCache[ frame.header.from_node ] );
+	  //tq 修改
+	  }else if(frame.header.type == GPS_TYPE){
+		  gps_queue.push( frameFragmentsCache[ frame.header.from_node ] );
 	  }else{
         frame_queue.push( frameFragmentsCache[ frame.header.from_node ] );
 	  }
@@ -319,20 +321,16 @@ uint8_t RF24Network::enqueue(RF24NetworkHeader* header) {
     // Copy the current frame into the frame queue
 	result=frame.header.type == EXTERNAL_DATA_TYPE ? 2 : 1;
     //Load external payloads into a separate queue on linux
+	//ALso load dsdv msg into a separate queue
 	if(result == 2){
 	  external_queue.push( frame );
-	}else{
-      frame_queue.push( frame );
-	}
+	//tq 修改
+	}else if(frame.header.type == GPS_TYPE){
+      gps_queue.push( frame );
+	}else
+		frame_queue.push( frame );
 	
-
-  }/* else {
-    //Undefined/Unknown header.type received. Drop frame!
-    IF_SERIAL_DEBUG_MINIMAL( printf("%u: FRG Received unknown or system header type %d with fragment id %d\n",millis(),frame.header.type, frame.header.reserved); );
-    //The frame is not explicitly dropped, but the given object is ignored.
-    //FIXME: does this causes problems with memory management?
-  }*/
-
+  }
   if (result) {
     //IF_SERIAL_DEBUG(printf("ok\n\r"));
   } else {
@@ -655,6 +653,34 @@ uint16_t RF24Network::read(RF24NetworkHeader& header,void* message, uint16_t max
   return bufsize;
 }
 
+//tq add
+uint16_t RF24Network::read_gps(RF24NetworkHeader& header,void* message, uint16_t maxlen)
+{
+	uint16_t bufsize = 0;
+
+	if ( available_gps() ) 
+	{
+		RF24NetworkFrame frame = gps_queue.front();
+
+		// How much buffer size should we actually copy?
+		bufsize = std::min(frame.message_size,maxlen);
+		memcpy(&header,&(frame.header),sizeof(RF24NetworkHeader));
+		memcpy(message,frame.message_buffer,bufsize);
+
+		IF_SERIAL_DEBUG(printf("%u: FRG message size %i\n",millis(),frame.message_size););
+		IF_SERIAL_DEBUG(printf("%u: FRG message ",millis()); const char* charPtr = reinterpret_cast<const char*>(message); for (uint16_t i = 0; i < bufsize; i++) { printf("%02X ", charPtr[i]); }; printf("\n\r"));	
+	
+		IF_SERIAL_DEBUG(printf_P(PSTR("%u: NET read %s\n\r"),millis(),header.toString()));
+
+		gps_queue.pop();
+	}
+	return bufsize;
+}
+
+bool RF24Network::available_gps(void)
+{
+	return (!gps_queue.empty());
+}
 
 #if defined RF24NetworkMulticast
 /******************************************************************/
@@ -951,8 +977,8 @@ bool RF24Network::write(uint16_t to_node, uint8_t directTo)  // Direct To: 0 = F
 /******************************************************************/
 
 	// Provided the to_node and directTo option, it will return the resulting node and pipe
+//输入目的地址，通过路由表转化出下一跳和对应的pipe号
 bool RF24Network::logicalToPhysicalAddress(logicalToPhysicalStruct *conversionInfo){
-
   //Create pointers so this makes sense.. kind of
   //We take in the to_node(logical) now, at the end of the function, output the send_node(physical) address, etc.
   //back to the original memory address that held the logical information.
@@ -960,11 +986,14 @@ bool RF24Network::logicalToPhysicalAddress(logicalToPhysicalStruct *conversionIn
   uint8_t *directTo = &conversionInfo->send_pipe;
   bool *multicast = &conversionInfo->multicast;    
   
-  // Where do we send this?  By default, to our parent
-  uint16_t pre_conversion_send_node = parent_node; 
-
-  // On which pipe
-  uint8_t pre_conversion_send_pipe = parent_pipe %5;
+  uint16_t arg1,arg2;
+	fp=fopen("route.dat","rb");
+	while(!feof(fp)){
+		fscanf(fp,"%d,%d\n",&arg1,&arg2);
+		route_table[arg1]=arg2;
+		log(INFO,"route entry:(target)%#o->(nxt node)%#o\n",arg1,arg2);
+	}
+	fclose(fp);	
   
  if(*directTo > TX_ROUTED ){    
 	pre_conversion_send_node = *to_node;
@@ -973,33 +1002,21 @@ bool RF24Network::logicalToPhysicalAddress(logicalToPhysicalStruct *conversionIn
 		pre_conversion_send_pipe=0;
 	}	
   }     
-  // If the node is a direct child,
-  else
-  if ( is_direct_child(*to_node) )
-  {   
-    // Send directly
-    pre_conversion_send_node = *to_node;
-    // To its listening pipe
-    pre_conversion_send_pipe = 5;
-  }
-  // If the node is a child of a child
-  // talk on our child's listening pipe,
-  // and let the direct child relay it.
-  else if ( is_descendant(*to_node) )
-  {
-    pre_conversion_send_node = direct_child_route_to(*to_node);
-    pre_conversion_send_pipe = 5;
-  }
 
-  //@ztq try to route the frame directly to the target in example hello
-  //@ztq recomment two lines below
-  *directTo = 5;
-  
-  //*to_node = pre_conversion_send_node;
-  //*directTo = pre_conversion_send_pipe;
-  
-  return 1;
-  
+  //判断为gps消息时，直接转发
+  RF24NetworkHeader* header = (RF24NetworkHeader*)&frame_buffer;
+  if(header->type == GPS_TYPE)
+	  *directTo = 5;
+  else 
+	  if(route_table.find(*to_node) != 0)
+	  {
+		  *to_node = route_table[*to_node];
+		  *directTo = 5;
+	  }
+	  else
+		//目的不可达
+		log(ERROR,"***cannot send or relay this msg, no routing entry!");  
+  return 1; 
 }
 
 /********************************************************/
@@ -1011,7 +1028,7 @@ bool RF24Network::write_to_pipe( uint16_t node, uint8_t pipe, bool multicast )
   uint64_t out_pipe = pipe_address( node, pipe );
 
   //@ztq print the routing info
-  printf("Routing info: fr N <%u> to nxt N <%u> in pipe <%u>",node_address,node,out_pipe);
+  log(INFO,"Routing info: fr N <%u> to nxt N <%u> in pipe <%u>",node_address,node,out_pipe);
   
   #if !defined (DUAL_HEAD_RADIO)
   // Open the correct pipe for writing.

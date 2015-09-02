@@ -420,6 +420,10 @@ public:
    * @return Whether there is a message available for this node
    */
   bool available(void);
+  
+  //tq add
+  //Test whether there is gps message available for this node
+  bool available_gps(void);
 
   /**
    * Read the next available header
@@ -455,6 +459,10 @@ public:
    */
   uint16_t read(RF24NetworkHeader& header, void* message, uint16_t maxlen);
 
+  //tq add
+  //read a message from gps_queue
+  uint16_t read_gps(RF24NetworkHeader& header, void* message, uint16_t maxlen);
+  
   /**
    * Send a message
    *
@@ -806,7 +814,6 @@ public:
   #if defined (RF24_LINUX)
     std::queue<RF24NetworkFrame> frame_queue;
     //tq add
-	std::queue<RF24NetworkFrame> dsdv_queue;
 	std::queue<RF24NetworkFrame> gps_queue;
 	std::map< uint16_t, RF24NetworkFrame> frameFragmentsCache;
     bool appendFragmentToFrame(RF24NetworkFrame frame);
@@ -842,6 +849,10 @@ public:
   uint16_t parent_node; /**< Our parent's node address */
   uint8_t parent_pipe; /**< The pipe our parent uses to listen to us */
   uint16_t node_mask; /**< The bits which contain signfificant node address information */
+  
+  //tq add
+  //route table
+  std::map<uint16_t,uint16_t> route_table;
   
   #if defined ENABLE_NETWORK_STATS
   static uint32_t nFails;

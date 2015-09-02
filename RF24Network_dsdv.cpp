@@ -21,10 +21,10 @@
   #include <iostream>
   #include <algorithm>
   #include <RF24/RF24.h>
-  #include "RF24Network.h"
+  #include "RF24Network_dsdv.h"
 #else  
   #include "RF24.h"
-  #include "RF24Network.h"
+  #include "RF24Network_dsdv.h"
 #endif
 
 #if defined (ENABLE_SLEEP_MODE) && !defined (RF24_LINUX) && !defined (__ARDUINO_X86__)

@@ -42,6 +42,7 @@ uint16_t nodeDis_table[MAX_NUM_of_NODE][MAX_NUM_of_NODE];
 //路由表，每一项为<目的地址，下一跳地址>
 std::map<uint16_t,uint16_t> route_table;
 
+//record the break link due to distance limit
 uint16_t monitor[MAX_NUM_of_NODE];
 uint16_t monitor_count=0;
 
@@ -102,6 +103,7 @@ void position_route()
 	for(it=route_table.begin();it!=route_table.end();++it)
 		fprintf(fp,"%d,%d\n",it->first,it->second);
 	fclose(fp);
+	uint16_t route_change_flag = 0;
 	
 	while(1)
 	{
@@ -121,8 +123,8 @@ void position_route()
 		}
 		
 		//接收与维护过程
-		network.update();
-		while(network.available_GPS())
+		network.update();	
+		while(network.available_gps())
 		{
 			//从本地缓冲队列中提取报文处理
 			//RF24NetworkHeader header; 
@@ -132,8 +134,8 @@ void position_route()
 			network.read_gps(&header, &msg, len);
 				
 			//打印收到的GPS信息
-			printf("*********GPS received from node %d\n", header.from_node);
-			printf(" latitude:%f, longitude:%f\n",msg.lat,msg.lon);
+			log(INFO,"*********GPS received from node %d\n", header.from_node);
+			log(INFO," latitude:%f, longitude:%f\n",msg.lat,msg.lon);
 			
 			//建立ip-id映射关系
 			if( addr_to_id.find(header.from_node) == 0 )
@@ -177,8 +179,7 @@ void position_route()
 						if(id_to_addr(i)! = 0)
 							route_table[header.from_node] = id_to_addr(i);
 						else{
-							printf("sth wrong, check your code!");
-							return 0;
+							log(ERROR,"sth wrong, check your code!");
 						}
 						flag = 1;
 						route_change_flag = 1；
@@ -186,7 +187,7 @@ void position_route()
 					}				
 				}
 				if(flag == 0)
-					printf("node %d unreachable!",id_to_addr(y));
+					log(INFO,"node %d unreachable!",id_to_addr(y));
 				
 				monitor[monitor_count]=y;
 				monitor_count++;
@@ -204,12 +205,17 @@ void position_route()
 		}
 		
 	}
+}
 
+int main()
+{
+	position_route();
+	return 0;
 }
 
 //*****************************************
 
-
+/*
 std::queue<RF24NetworkFrame> gps_queue;
 
 uint16_t RF24Network::read_gps(RF24NetworkHeader& header,void* message, uint16_t maxlen)
@@ -322,6 +328,15 @@ bool RF24Network::logicalToPhysicalAddress(logicalToPhysicalStruct *conversionIn
   uint8_t *directTo = &conversionInfo->send_pipe;
   bool *multicast = &conversionInfo->multicast;    
   
+  uint16_t arg1,arg2;
+	fp=fopen("route.dat","rb");
+	while(!feof(fp)){
+		fscanf(fp,"%d,%d\n",&arg1,&arg2);
+		route_table[arg1]=arg2;
+		log(INFO,"route entry:(target)%#o->(nxt node)%#o\n",arg1,arg2);
+	}
+	fclose(fp);	
+  
  if(*directTo > TX_ROUTED ){    
 	pre_conversion_send_node = *to_node;
 	*multicast = 1;
@@ -347,3 +362,4 @@ bool RF24Network::logicalToPhysicalAddress(logicalToPhysicalStruct *conversionIn
 }
 
 #define GPS_TYPE 21
+*/

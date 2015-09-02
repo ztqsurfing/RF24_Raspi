@@ -55,6 +55,7 @@ void dsdv()
 		fprintf(fp,"%d,%d\n",it->first,it->second);
 	fclose(fp);
 	
+	uint16_t route_change_flag = 0;
 	while(1)
 	{
 		sleep(1);//sending interval is 1s
@@ -80,8 +81,7 @@ void dsdv()
 		free(pl.data);
 		
 		//接收与维护过程
-		network.update();
-		uint16_t route_change_flag = 0;
+		network.update();	
 		while(network.available_dsdv())
 		{
 			//从本地缓冲队列中提取报文处理
@@ -123,8 +123,9 @@ void dsdv()
 					DV_table[dv_size].metric_count = msg.data[j]->metric_count + 1;
 					DV_table[dv_size].node_nxt = header.from_node;
 					DV_table[dv_size].node_dst = msg.data[j]->node_dst;
-					dv_size++;
 					route_table[DV_table[dv_size].node_dst] = header.from_node;
+					dv_size++;
+					
 					//发生修改标志置1
 					route_change_flag = 1;
 				}
@@ -142,24 +143,38 @@ void dsdv()
 			//本地节点不会给自己发送DV表，所以不需要保活计数项
 			if(neighbor_alive_count[DV_table[i].node_nxt] != 0 & DV_table[i].node_nxt != node_address)
 			{
-				neighbor_alive_count[DV_table[i].node_nxt]++;
+				uint16_t addr_tmp = DV_table[i].node_nxt;
+				neighbor_alive_count[addr_tmp]++;
 				//如果超过阈值t_alive仍未收到消息，认为连接断开
 				//1.去除本地维护的距离向量表中对应项；2.去除以该节点为下一跳的路由项
 				//3.删除距离向量表中从本地至该节点的项以及以该节点为中继的项 4.找到合适的下一跳 
-				if(neighbor_alive_count[DV_table[i].node_nxt] > t_alive)
+				if(neighbor_alive_count[addr_tmp] > t_alive)
 				{
 					DV_table[i] = DV_table[dv_size - 1];
 					dv_size--;
 					if(i != 0)
 						i--;
 					//删除该节点对应的保活计数项
-					neighbor_alive_count.erase(DV_table[i].node_nxt);
+					neighbor_alive_count.erase(addr_tmp);
 					
-					//删除以该节点为下一跳的路由表项					
+					//修改以该节点为下一跳的路由表项					
 					for(it=route_table.begin();it!=route_table.end();++it){
-						if(it->second == DV_table[i].node_nxt)
+						if(it->second == addr_tmp)
 						{
-							route_table.erase(it->first);
+							//route_table.erase(it->first);
+							uint16_t new_nxt_find=0;
+							for(i = 0 ; i < dv_size ; i++)
+								if((DV_table[i].node_nxt != it->second) && (DV_table[i].node_dst == it->first)){
+									route_table[it->first] = DV_table[i].node_nxt;
+									route_change_flag = 1;
+									new_nxt_find=1;
+									break;
+								}
+							if(!new_nxt_find){
+								route_table.erase(it->first);
+								dv_size--;
+								route_change_flag = 1;
+							}								
 							break;
 						}
 					}						
@@ -299,13 +314,22 @@ bool RF24Network::logicalToPhysicalAddress(logicalToPhysicalStruct *conversionIn
   uint8_t *directTo = &conversionInfo->send_pipe;
   bool *multicast = &conversionInfo->multicast;    
   
- if(*directTo > TX_ROUTED ){    
-	pre_conversion_send_node = *to_node;
-	*multicast = 1;
-	if(*directTo == USER_TX_MULTICAST){
-		pre_conversion_send_pipe=0;
-	}	
-  }     
+	uint16_t arg1,arg2;
+	fp=fopen("route.dat","rb");
+	while(!feof(fp)){
+		fscanf(fp,"%d,%d\n",&arg1,&arg2);
+		route_table[arg1]=arg2;
+		log(INFO,"route entry:(target)%#o->(nxt node)%#o\n",arg1,arg2);
+	}
+	fclose(fp);	
+  
+	if(*directTo > TX_ROUTED ){    
+		pre_conversion_send_node = *to_node;
+		*multicast = 1;
+		if(*directTo == USER_TX_MULTICAST){
+			pre_conversion_send_pipe=0;
+		}	
+	}     
 
   //判断为dsdv消息时，直接转发
   RF24NetworkHeader* header = (RF24NetworkHeader*)&frame_buffer;

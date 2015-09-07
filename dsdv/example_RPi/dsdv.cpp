@@ -1,6 +1,6 @@
 #include <RF24/RF24.h>
 #include <RF24Network/RF24Network.h>
-#include <log.h>
+#include <RF24Network/Rlog.h>
 
 #define MAX_SIZE_of_DVT 10
 //超过10s未收到消息，表明连接断开
@@ -41,6 +41,10 @@ std::map<uint16_t,uint16_t> neighbor_alive_count;
 
 FILE * fp;
 
+RF24 radio(RPI_V2_GPIO_P1_15, BCM2835_SPI_CS0, BCM2835_SPI_SPEED_8MHZ);  
+
+RF24Network network(radio);
+
 void dsdv()
 {
 	//距离向量表初始化
@@ -58,18 +62,19 @@ void dsdv()
 	uint16_t route_change_flag = 0;
 	while(1)
 	{
-		sleep(1);//sending interval is 1s
+		delay(5);//sending interval is 5s
 		
 		//send local D-V table periodically
 		
 		payload_t pl;
 		pl.size = dv_size;
-		pl.data = (DV_entry*) malloc(sizeof(DV_entry) * dv_size);
+		//pl.data = (DV_entry*) malloc(sizeof(DV_entry) * dv_size);
+		pl.data = new DV_entry[sizeof(DV_entry) * dv_size];
 		for(int i=0; i < dv_size; i++)
-			*(pl.data[i]) = DV_table[i];
+			*(pl.data + i) = DV_table[i];
 		
 		//broadcast local DV table to each node
-		for(i = 0; i < neighbor_num ; i++)
+		for(int i = 0; i < neighbor_num ; i++)
 		{		
 			//param dst node
 			//param header type
@@ -78,24 +83,25 @@ void dsdv()
 			//***修改RF24Network中的判断逻辑，如果类型是dsdv，直接写
 			bool ok = network.write(header, &pl, sizeof(payload_t));
 		}		
-		free(pl.data);
+		delete pl.data;
 		
 		//接收与维护过程
 		network.update();	
 		while(network.available_dsdv())
 		{
 			//从本地缓冲队列中提取报文处理
-			//RF24NetworkHeader header; 
+			RF24NetworkHeader header; 
 			payload_t msg;
 			uint16_t len = sizeof(payload_t);
 
-			network.read_dsdv(&header, &msg, len);
-				
+			network.read_dsdv(header, &msg, len);
+			DV_entry* dv_data = msg.data;
+			
 			//打印收到的距离向量表
 			printf("*********DV received from node %d\n", header.from_node);
 			printf(" dst \t nxt \t metric\n");
-			for(i = 0; j < msg.size ; j++)
-				printf("%d \t%d\t%d\n",msg.data[i]->node_dst,msg.data[i]->node_nxt,msg.data[i]->metric_count);
+			for(int i = 0; i < msg.size ; i++)
+				printf("%d \t%d\t%d\n",(*(dv_data + i)).node_dst,(*(dv_data + i)).node_nxt,(*(dv_data + i)).metric_count);
 			printf("********************************\n");
 				
 			//todo parse the msg to obtain D-V table	
@@ -103,14 +109,14 @@ void dsdv()
 			uint16_t flag = 0;
 			for(int j = 0 ; j < msg.size ; j++)
 			{
-				for(i = 0 ; i < dv_size; i++)
+				for(int i = 0 ; i < dv_size; i++)
 					//已有该目的地址对应的路由项
-					if(msg.data[j].node_dst == DV_table[i].node_dst)
+					if((*(dv_data + j)).node_dst == DV_table[i].node_dst)
 					{
 						flag =1;
 						//修改对应的路由项
-						if(msg.data[j]->metric_count + 1 < DV_table[i].metric_count){
-							DV_table[i].metric_count = msg.data[j]->metric_count + 1;
+						if((*(dv_data + j)).metric_count + 1 < DV_table[i].metric_count){
+							DV_table[i].metric_count = (*(dv_data + j)).metric_count + 1;
 							DV_table[i].node_nxt = header.from_node;
 							route_table[DV_table[i].node_dst] = header.from_node;
 							//发生修改标志置1
@@ -120,9 +126,9 @@ void dsdv()
 				//增加新的路由项
 				if(flag == 0)
 				{
-					DV_table[dv_size].metric_count = msg.data[j]->metric_count + 1;
+					DV_table[dv_size].metric_count = (*(dv_data + j)).metric_count + 1;
 					DV_table[dv_size].node_nxt = header.from_node;
-					DV_table[dv_size].node_dst = msg.data[j]->node_dst;
+					DV_table[dv_size].node_dst = (*(dv_data + j)).node_dst;
 					route_table[DV_table[dv_size].node_dst] = header.from_node;
 					dv_size++;
 					
@@ -137,11 +143,11 @@ void dsdv()
 		}//end of dsdv_queue reading
 		
 		//更新保活计数
-		for(i = 0 ; i < dv_size ; i++)
+		for(int i = 0 ; i < dv_size ; i++)
 		{
 			//本次更新未收到某个节点的消息，则保活计数加 1
 			//本地节点不会给自己发送DV表，所以不需要保活计数项
-			if(neighbor_alive_count[DV_table[i].node_nxt] != 0 & DV_table[i].node_nxt != node_address)
+			if((neighbor_alive_count[DV_table[i].node_nxt] != 0) & (DV_table[i].node_nxt != node_address))
 			{
 				uint16_t addr_tmp = DV_table[i].node_nxt;
 				neighbor_alive_count[addr_tmp]++;
@@ -195,6 +201,11 @@ void dsdv()
 
 int main()
 {
+	radio.begin();
+	
+	delay(5);
+	network.begin(/*channel*/ 90, /*node address*/ node_address);
+	
 	dsdv();
 	return 0;
 }

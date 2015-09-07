@@ -1,6 +1,6 @@
 #include <RF24/RF24.h>
 #include <RF24Network/RF24Network.h>
-#include <log.h>
+#include <RF24Network/Rlog.h>
 
 #include <math.h>
 
@@ -41,10 +41,17 @@ uint16_t nodeDis_table[MAX_NUM_of_NODE][MAX_NUM_of_NODE];
 
 //路由表，每一项为<目的地址，下一跳地址>
 std::map<uint16_t,uint16_t> route_table;
+std::map<uint16_t,uint16_t>::iterator it;
 
 //record the break link due to distance limit
 uint16_t monitor[MAX_NUM_of_NODE];
 uint16_t monitor_count=0;
+
+FILE * fp;
+
+RF24 radio(RPI_V2_GPIO_P1_15, BCM2835_SPI_CS0, BCM2835_SPI_SPEED_8MHZ);  
+
+RF24Network network(radio);
 
 double rad(double d)
 {
@@ -71,7 +78,6 @@ void updateGPS()
 
 uint16_t id_to_addr(uint16_t id)
 {
-	std::map<uint16_t,uint16_t>::iterator it;
 	for(it=route_table.begin();it!=route_table.end();++it){
 		if(it->second == id)
 			return it->first;
@@ -107,12 +113,12 @@ void position_route()
 	
 	while(1)
 	{
-		sleep(1);//sending interval is 1s
+		delay(5);//sending interval is 5s
 		
 		updateGPS();
 		payload_t pl = {localgps.lat, localgps.lon};
 		//将本地的GPS信息发送给所有节点
-		for(i = 0; i < neighbor_num ; i++)
+		for(int i = 0; i < neighbor_num ; i++)
 		{		
 			//param dst node
 			//param header type
@@ -126,26 +132,27 @@ void position_route()
 		network.update();	
 		while(network.available_gps())
 		{
-			//从本地缓冲队列中提取报文处理
-			//RF24NetworkHeader header; 
+			//从本地缓冲队列中提取报文处理 
 			payload_t msg;
 			uint16_t len = sizeof(payload_t);
 
-			network.read_gps(&header, &msg, len);
+			RF24NetworkHeader header;
+			network.read_gps(header, &msg, len);
 				
 			//打印收到的GPS信息
-			log(INFO,"*********GPS received from node %d\n", header.from_node);
-			log(INFO," latitude:%f, longitude:%f\n",msg.lat,msg.lon);
+			char log_print_tmp[30];
+			sprintf(log_print_tmp,"*********GPS received from node %d\n latitude:%f, longitude:%f\n", header.from_node,msg.lat,msg.lon);
+			Rlog(INFO,log_print_tmp);
 			
 			//建立ip-id映射关系
-			if( addr_to_id.find(header.from_node) == 0 )
+			if( addr_to_id.count(header.from_node) == 0 )
 				addr_to_id[header.from_node] = id_inc++;
 			
 			//维护GPS表、距离表
 			uint16_t y = addr_to_id[header.from_node];
 			GPS_table[y].lat = msg.lat;
 			GPS_table[y].lon = msg.lon;		
-			for(i=0;i<id_inc;i++)
+			for(int i=0;i<id_inc;i++)
 			{
 				if(i != y){
 					uint16_t d_tmp = GetDistance(GPS_table[i].lat,GPS_table[i].lon,GPS_table[y].lat,GPS_table[y].lon);
@@ -154,7 +161,7 @@ void position_route()
 				}
 			}
 			//距离恢复到一跳可达，则直接连接
-			for(i=0;i<monitor_count;i++)
+			for(int i=0;i<monitor_count;i++)
 			{
 				uint16_t addr = monitor[i];
 				uint16_t id_tmp = addr_to_id[addr];
@@ -170,24 +177,27 @@ void position_route()
 			//距离大于一跳可达，则切换路由
 			if(nodeDis_table[node_id][y] > d_threshold)
 			{
-				i=node_id+1;
+				int i=node_id+1;
 				uint16_t flag = 0;
-				while(i!=y & i<id_inc)
+				while((i!=y) & (i<id_inc))
 				{
 					if((nodeDis_table[node_id][i] < d_threshold) && ( nodeDis_table[i][y] < d_threshold))
 					{
-						if(id_to_addr(i)! = 0)
+						if(id_to_addr(i) != 0)
 							route_table[header.from_node] = id_to_addr(i);
 						else{
-							log(ERROR,"sth wrong, check your code!");
+							//RLog(ERROR,"sth wrong, check your code!");
 						}
 						flag = 1;
-						route_change_flag = 1；
+						route_change_flag = 1;
 						break;
 					}				
 				}
-				if(flag == 0)
-					log(INFO,"node %d unreachable!",id_to_addr(y));
+				if(flag == 0){
+					char log_print_tmp[30];
+					sprintf(log_print_tmp,"node %d unreachable!",id_to_addr(y));
+					Rlog(INFO,log_print_tmp);
+				}
 				
 				monitor[monitor_count]=y;
 				monitor_count++;
@@ -209,6 +219,11 @@ void position_route()
 
 int main()
 {
+	radio.begin();
+	
+	delay(5);
+	network.begin(/*channel*/ 90, /*node address*/ node_address);
+	
 	position_route();
 	return 0;
 }
